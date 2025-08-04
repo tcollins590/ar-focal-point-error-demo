@@ -4,7 +4,7 @@ A minimal iOS app demonstrating projection discrepancies in ARKit when using adj
 
 ## Problem Statement
 
-ARKit's `ARCamera.projectPoint()` method appears to use focal length values that don't perfectly match the physical camera characteristics of iOS devices. This results in systematic projection errors that become more pronounced when objects are further from the screen center or when the camera is tilted.
+ARKit's rendering pipeline and `ARCamera.projectPoint()` method appears to use focal length values that don't perfectly match the physical camera characteristics of iOS devices. This results in systematic projection errors that become more pronounced when objects are further from the screen center or when the camera is tilted.
 
 ## What This App Demonstrates
 
@@ -12,7 +12,12 @@ The app visualizes the difference between:
 - **Green dot**: ARKit's native `ARCamera.projectPoint()` projection
 - **Red dot**: Custom projection using ARKit's view/projection matrices with adjustable focal length scaling
 
-When placing an anchor in AR space, both dots should theoretically overlap perfectly. However, adjusting the focal length scaling factors (FX/FY) can achieve better alignment, suggesting that ARKit's internal camera model may benefit from device-specific calibration.
+When placing an anchor in AR space, both dots should theoretically overlap perfectly. However, adjusting the focal length scaling factors (FX/FY) can achieve better real-world alignment, suggesting that ARKit's internal camera model may benefit from device-specific calibration.
+
+## Video Demo
+Pay attention to the cube and the green dot as they approach the edges of the screen. Rather than staying perfectly on top of the edge on the wall, they systematically drift. Adjusting the focal length by a small amount seems to fix this systematic error.
+
+https://github.com/user-attachments/assets/eb2e382b-caa4-4f23-92e5-eb60f4655dcf
 
 ## Technical Implementation
 
