@@ -369,8 +369,18 @@ final class ARDistortionSelfCalibrator {
             (p[3] + p[4] * (lens - Self.lensRef)) * 1e-8
         }
         let k1m = k1At(th, lensMid), k1e = k1At(te, lensMid), k1o = k1At(to, lensMid)
+        // Residual rms of the hi-res photo samples alone (fx>2000): verifies
+        // the PHOTO pipeline with the anchor solved jointly — free of the
+        // raycast/drift contamination that biases external photo tests.
+        var hiSse = 0.0
+        var hiCnt = 0
+        for smp in kept where smp.fx > 2000 {
+            if let r = residual(smp, th) { hiSse += r.x * r.x + r.y * r.y; hiCnt += 1 }
+        }
+        let rmsHiRes = hiCnt > 0 ? (hiSse / Double(hiCnt)).squareRoot() : -1
         lastSolveDiagnostics = [
             "rms": rms, "n": Double(kept.count),
+            "rmsHiRes": rmsHiRes, "nHiRes": Double(hiCnt),
             "scale": th[5], "dcx": th[6], "dcy": th[7],
             "k1_mid": k1m, "k1_even": k1e, "k1_odd": k1o,
             "k1_slope_1e8": th[4],
