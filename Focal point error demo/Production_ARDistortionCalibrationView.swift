@@ -48,7 +48,10 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
         i == farFocusStance ? "\(stanceFt(i)) ft ∞" : "\(stanceFt(i)) ft"
     }
     static func stanceFt(_ i: Int) -> Int { Int((stances[i] * 3.28084).rounded()) }
-    static let stanceTolerance = 0.35                             // meters
+    // Tight enough that "4 ft" really samples the 4 ft lens state: +0.35 m
+    // let users hover at 5+ ft and the solve lost its low-lens leg entirely
+    // (measured lensLo 0.753 vs 0.702 on a proper run).
+    static let stanceTolerance = 0.20                             // meters
 
     /// Pan path per sweep (snake order to minimize tilt travel):
     /// center column top→bottom, right column bottom→top, left column
@@ -716,9 +719,12 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
             guard settled >= 0.5, !advancePending else { return }
             cells[stanceIndex][positionIndex] += 1
             refreshDerived()
+            // Photo-pipeline sample fires MID-hold (credit 3 of 10), while the
+            // user is still steady on the ring — firing at cell-done caught
+            // the swing to the next position and 24/37 got motion-trimmed.
+            if cells[stanceIndex][positionIndex] == 3 { captureHiResSample() }
             if cellDone(stanceIndex, positionIndex) {
                 flog("cell done stance=\(Self.stanceFt(stanceIndex))ft pos='\(currentSay)'")
-                captureHiResSample()
                 // A visible completion beat before the ring moves on.
                 advancePending = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in

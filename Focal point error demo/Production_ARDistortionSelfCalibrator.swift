@@ -392,6 +392,20 @@ final class ARDistortionSelfCalibrator {
         let lensLo = lensVals[lensVals.count / 10]
         let lensHi = lensVals[(lensVals.count * 9) / 10]
         let lensMid = lensVals[lensVals.count / 2]
+        // The k1(lens) slope and the scale term are only well-separated when
+        // the run actually spans the focus range — a narrow band lets scale
+        // absorb k1 (measured: lens span 0.059 -> scale 0.97% vs span 0.11 ->
+        // scale 0.52% on the same device/day). Customer-facing message.
+        if lensHi - lensLo < 0.07 {
+            status = .failed("Stand right ON the 4 ft line for the close-up part, then finish the flow")
+            return status
+        }
+        let hiResCollected = samples.filter { $0.fx > 2000 }.count
+        let hiResKept = kept.filter { $0.fx > 2000 }.count
+        if hiResCollected > 0, hiResKept < 6 {
+            status = .failed("Hold each circle steady for a beat — the full-resolution checks came out blurred")
+            return status
+        }
         func k1At(_ p: [Double], _ lens: Double) -> Double {
             (p[3] + p[4] * (lens - Self.lensRef)) * 1e-8
         }
