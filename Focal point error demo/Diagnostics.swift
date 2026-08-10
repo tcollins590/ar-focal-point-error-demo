@@ -125,9 +125,12 @@ final class AnchorRefiner {
         let std = SIMD3<Float>(varSum.x.squareRoot(), varSum.y.squareRoot(), varSum.z.squareRoot())
             / Float(samples.count).squareRoot()
         let baseline = max(std.x, max(std.y, std.z))
-        let maxRad = samples.map { s in
-            ((s.obs.x - s.cx) * (s.obs.x - s.cx) + (s.obs.y - s.cy) * (s.obs.y - s.cy)).squareRoot()
-        }.max() ?? 0
+        var maxRad = 0.0
+        for s in samples {
+            let dx: Double = s.obs.x - s.cx
+            let dy: Double = s.obs.y - s.cy
+            maxRad = max(maxRad, (dx * dx + dy * dy).squareRoot())
+        }
         if baseline < 0.15 {
             gateStatus = String(format: "sweep needs side-to-side movement (baseline %.0f cm < 15)", baseline * 100)
             refined = nil
