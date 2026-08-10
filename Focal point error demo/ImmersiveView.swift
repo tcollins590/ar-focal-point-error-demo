@@ -332,6 +332,10 @@ class ARState: NSObject, ObservableObject, ARSessionDelegate {
     private var imageAnchor: ARImageAnchor?
     private var recordingStarted = false
     private var autoTarget: simd_float3?
+    // ARKit-pinned backing anchor for the target, mirroring production's
+    // DriftCorrectionTracker: reading its live transform keeps the frozen
+    // world point aligned as ARKit re-optimizes its map (drift corrections).
+    private var targetAnchor: ARAnchor?
     private var autoLockCounter = 0
     private var lastAutoPoint: CGPoint?
 
@@ -387,6 +391,10 @@ class ARState: NSObject, ObservableObject, ARSessionDelegate {
         self.anchorEntity = anchor
         self.targetWorld = world
         self.autoTarget = nil
+        if let old = targetAnchor { arView.session.remove(anchor: old) }
+        let pin = ARAnchor(name: "verify_target", transform: raycastResult.worldTransform)
+        arView.session.add(anchor: pin)
+        targetAnchor = pin
         engine.targetChanged(distance: dist)
     }
 
@@ -442,6 +450,10 @@ class ARState: NSObject, ObservableObject, ARSessionDelegate {
                             engine.placementTooClose(distance: dist)
                         } else {
                             autoTarget = world
+                            if let old = targetAnchor { arView.session.remove(anchor: old) }
+                            let pin = ARAnchor(name: "verify_target", transform: hit.worldTransform)
+                            arView.session.add(anchor: pin)
+                            targetAnchor = pin
                             engine.targetChanged(distance: dist)
                             engine.markEvent("auto_target_locked")
                             engine.hud.calStatus = String(format: "anchor placed %.1f m — now STEP left & right while panning the QR to the corners", dist)
@@ -454,11 +466,18 @@ class ARState: NSObject, ObservableObject, ARSessionDelegate {
         }
 
         var targetSource = "none"
+        // Prefer the ARKit-pinned anchor's live transform: it receives the
+        // session's drift/relocalization corrections that a frozen coordinate
+        // would silently miss.
+        let pinned = targetAnchor.map { a in
+            simd_float3(a.transform.columns.3.x, a.transform.columns.3.y, a.transform.columns.3.z)
+        }
         var effectiveTarget = targetWorld
         if targetWorld != nil {
+            effectiveTarget = pinned ?? targetWorld
             targetSource = "manual"
         } else if let at = autoTarget {
-            effectiveTarget = at
+            effectiveTarget = pinned ?? at
             targetSource = "auto"
         } else if let ia = imageAnchor, ia.isTracked {
             let c = ia.transform.columns.3
