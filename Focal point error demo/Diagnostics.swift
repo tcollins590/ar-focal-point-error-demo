@@ -1141,9 +1141,11 @@ final class DiagnosticsEngine: ObservableObject {
             } else {
                 self.hud.calStatus = String(format: "PHOTO %@ (%.0fx%.0f): QR not found in photo", fileName, res.width, res.height)
             }
-            self.markEvent(String(format: "photo %@ raw=%.1f corr=%.1f refCorr=%.1f shiftCm=%.1f refN=%d r=%.0f fxHi=%.0f resW=%.0f",
-                                  fileName, rawErr ?? -1, corrErr ?? -1, refCorrErr ?? -1,
-                                  anchorShiftCm, refN, radius, fxHi, res.width))
+            var note = String(format: "photo %@ raw=%.1f corr=%.1f refCorr=%.1f shiftCm=%.1f refN=%d r=%.0f fxHi=%.0f resW=%.0f",
+                              fileName, rawErr ?? -1, corrErr ?? -1, refCorrErr ?? -1,
+                              anchorShiftCm, refN, radius, fxHi, res.width)
+            if refined == nil { note += " gate='" + refGate + "'" }
+            self.markEvent(note)
         }
     }
 
