@@ -415,39 +415,41 @@ class ARState: NSObject, ObservableObject, ARSessionDelegate {
             engine.startRecordingIfNeeded()
         }
 
-        // Auto-anchor: when the tracked QR is stable near screen center for
-        // ~0.75 s, raycast along its center direction (depth from geometry)
-        // and freeze the target — no manual placement needed. The
-        // calibrator's joint solve refines any residual placement error.
-        if targetWorld == nil, autoTarget == nil, let ia = imageAnchor, ia.isTracked {
-            let c = ia.transform.columns.3
-            let sp = frame.camera.projectPoint(simd_float3(c.x, c.y, c.z),
-                                               orientation: .portrait,
-                                               viewportSize: viewportSize)
-            let center = CGPoint(x: viewportSize.width / 2, y: viewportSize.height / 2)
-            let near = hypot(sp.x - center.x, sp.y - center.y) < min(viewportSize.width, viewportSize.height) * 0.30
-            let stable = lastAutoPoint.map { hypot(sp.x - $0.x, sp.y - $0.y) < 6 } ?? false
-            lastAutoPoint = sp
-            autoLockCounter = (near && stable) ? autoLockCounter + 1 : 0
-            if autoLockCounter >= 45 {
-                let world: simd_float3
-                if let hit = arView.raycast(from: sp, allowing: .estimatedPlane, alignment: .any).first {
-                    world = simd_float3(hit.worldTransform.columns.3.x,
-                                        hit.worldTransform.columns.3.y,
-                                        hit.worldTransform.columns.3.z)
-                } else {
-                    world = simd_float3(c.x, c.y, c.z)
+        // Auto-anchor, calibration-style: when the Vision-detected QR center
+        // sits stably at screen center (within 15% of the short side) for
+        // ~0.75 s, raycast through the detection and freeze the target — no
+        // manual placement. Raycast must hit (no image-anchor fallback: a
+        // miss would anchor at the wrong depth) and must be 5+ ft away.
+        if targetWorld == nil, autoTarget == nil {
+            if let vp = engine.visionScreenPoint {
+                let center = CGPoint(x: viewportSize.width / 2, y: viewportSize.height / 2)
+                let near = hypot(vp.x - center.x, vp.y - center.y) < min(viewportSize.width, viewportSize.height) * 0.15
+                let stable = lastAutoPoint.map { hypot(vp.x - $0.x, vp.y - $0.y) < 8 } ?? false
+                lastAutoPoint = vp
+                autoLockCounter = (near && stable) ? autoLockCounter + 1 : 0
+                if !near, engine.hud.calStatus.isEmpty || engine.hud.calStatus.hasPrefix("center the QR") {
+                    engine.hud.calStatus = "center the QR at screen center (5+ ft away) to auto-place the anchor"
                 }
-                let camPos = arView.cameraTransform.translation
-                let dist = simd_length(world - camPos)
-                if dist < 1.5 {
+                if autoLockCounter >= 45 {
                     autoLockCounter = 0
-                    engine.placementTooClose(distance: dist)
-                    return
+                    if let hit = arView.raycast(from: vp, allowing: .estimatedPlane, alignment: .any).first {
+                        let world = simd_float3(hit.worldTransform.columns.3.x,
+                                                hit.worldTransform.columns.3.y,
+                                                hit.worldTransform.columns.3.z)
+                        let camPos = arView.cameraTransform.translation
+                        let dist = simd_length(world - camPos)
+                        if dist < 1.5 {
+                            engine.placementTooClose(distance: dist)
+                        } else {
+                            autoTarget = world
+                            engine.targetChanged(distance: dist)
+                            engine.markEvent("auto_target_locked")
+                            engine.hud.calStatus = String(format: "anchor auto-placed %.1f m — sweep the QR around the screen ~10 s, then take photos", dist)
+                        }
+                    } else {
+                        engine.hud.calStatus = "no surface behind QR — move slightly or scan the wall first"
+                    }
                 }
-                autoTarget = world
-                engine.targetChanged(distance: dist)
-                engine.markEvent("auto_target_locked")
             }
         }
 
