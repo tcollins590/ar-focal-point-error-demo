@@ -382,6 +382,9 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
                     // Hand the fresh calibration to the live corrector — the
                     // settings UI and all projections read from its cache.
                     ARProjectionCorrector.shared.applyUserCalibration(cal)
+                    // Completing a calibration is a clear statement of intent:
+                    // turn the correction on even if it was toggled off before.
+                    ARProjectionCorrector.shared.isEnabled = true
                     self.phase = .done
                     self.finished = cal
                 case .failed(let why):
