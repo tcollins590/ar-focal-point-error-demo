@@ -156,6 +156,7 @@ final class DemoProjectionCorrector {
         if let set = RadialCalibrationSet.load(), !set.points.isEmpty {
             calibrations = set
             isUserCalibrated = true
+            appliedScale = set.points.first?.scaleDiag ?? 0
         } else if let single = RadialCalibration.load() {
             calibrations.insert(single)   // migrate old single-point file
             isUserCalibrated = true
@@ -170,6 +171,7 @@ final class DemoProjectionCorrector {
     }
 
     func apply(_ cal: RadialCalibration) {
+        appliedScale = cal.scaleDiag
         if !isUserCalibrated {
             // First user calibration replaces the factory/generic curve
             // entirely rather than mixing provenances.

@@ -328,6 +328,7 @@ final class DiagnosticsEngine: ObservableObject {
     weak var arView: ARView?
 
     private let fitter = ProjectionFitter()
+    private var photoStatusTime: Date?
     let anchorRefiner = AnchorRefiner()
     private let visionQueue = DispatchQueue(label: "diag.vision")
     private var visionBusy = false
@@ -755,7 +756,8 @@ final class DiagnosticsEngine: ObservableObject {
                               k1px: corrector.k1, scale: corrector.appliedScale, target: tw)
             // Live coaching toward a solvable anchor; never stomp on photo
             // results or calibration status.
-            if !hud.calibrating, !hud.calStatus.hasPrefix("PHOTO"), !hud.calStatus.hasPrefix("capturing") {
+            let photoFresh = photoStatusTime.map { Date().timeIntervalSince($0) < 4 } ?? false
+            if !hud.calibrating, !photoFresh, !hud.calStatus.hasPrefix("capturing") {
                 if anchorRefiner.refined == nil {
                     hud.calStatus = "sweep: " + anchorRefiner.gateStatus
                 } else {
@@ -908,7 +910,7 @@ final class DiagnosticsEngine: ObservableObject {
         corrector.appliedScale = user.scale
         for pt in user.points {
             corrector.apply(RadialCalibration(
-                k1: pt.k1n / (fx * fx), scaleDiag: 0,
+                k1: pt.k1n / (fx * fx), scaleDiag: user.scale,
                 principalOffsetX: 0, principalOffsetY: 0,
                 rmsPx: user.rmsPx, sampleCount: user.sampleCount,
                 lensMin: pt.lens, lensMax: pt.lens,
@@ -1148,6 +1150,7 @@ final class DiagnosticsEngine: ObservableObject {
         DispatchQueue.main.async {
             if let savedURL { self.photoURLs.append(savedURL) }
             self.photoBusy = false
+            self.photoStatusTime = Date()
             if let rawErr, let corrErr {
                 self.hud.calStatus = String(format: "PHOTO %@ (%.0fx%.0f): raw %.1f px → corrected %.1f px @ r=%.0f",
                                             fileName, res.width, res.height, rawErr, corrErr, radius)
