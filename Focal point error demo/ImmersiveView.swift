@@ -444,7 +444,7 @@ class ARState: NSObject, ObservableObject, ARSessionDelegate {
                             autoTarget = world
                             engine.targetChanged(distance: dist)
                             engine.markEvent("auto_target_locked")
-                            engine.hud.calStatus = String(format: "anchor auto-placed %.1f m — sweep the QR around the screen ~10 s, then take photos", dist)
+                            engine.hud.calStatus = String(format: "anchor placed %.1f m — now STEP left & right while panning the QR to the corners", dist)
                         }
                     } else {
                         engine.hud.calStatus = "no surface behind QR — move slightly or scan the wall first"
