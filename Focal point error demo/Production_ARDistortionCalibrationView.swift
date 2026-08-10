@@ -41,11 +41,11 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
     // with FOCUS LOCKED at infinity — measuring k1 at the capture-relevant
     // lens position (~0.81) directly. The code is mildly defocused there;
     // the low-density full-page code keeps detection alive.
-    static let stances: [Double] = [1.2, 2.1, 2.4]
+    static let stances: [Double] = [1.2, 2.1, 3.0]
     static let farFocusStance = 2
     static let farFocusLensPosition: Float = 0.81
     static func stanceLabel(_ i: Int) -> String {
-        i == farFocusStance ? "8 ft ∞" : "\(stanceFt(i)) ft"
+        i == farFocusStance ? "\(stanceFt(i)) ft ∞" : "\(stanceFt(i)) ft"
     }
     static func stanceFt(_ i: Int) -> Int { Int((stances[i] * 3.28084).rounded()) }
     static let stanceTolerance = 0.35                             // meters
