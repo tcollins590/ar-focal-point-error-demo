@@ -134,6 +134,36 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
     }
     private var bannerGeneration = 0
     private var stanceLensAccum: [Double] = []
+    // Debounced instruction banner: transient states (motion gate flicker
+    // while panning) must persist 0.6 s before the text switches — phase
+    // changes and failures switch immediately.
+    @Published var bannerText: String = ""
+    @Published var bannerColorName: String = "cyan"
+    private var pendingBannerText: String?
+    private var pendingBannerSince: CFAbsoluteTime = 0
+    private var lastBannerPhase: Phase = .acquiring
+
+    func refreshBanner(candidate: String, colorName: String) {
+        // Called from the view body: defer published mutations off the
+        // current view update.
+        DispatchQueue.main.async { self.refreshBannerNow(candidate: candidate, colorName: colorName) }
+    }
+
+    private func refreshBannerNow(candidate: String, colorName: String) {
+        let nowT = CFAbsoluteTimeGetCurrent()
+        if candidate == bannerText { pendingBannerText = nil; return }
+        let immediate = failureBanner != nil || phase != lastBannerPhase || bannerText.isEmpty
+        lastBannerPhase = phase
+        if immediate {
+            bannerText = candidate; bannerColorName = colorName; pendingBannerText = nil; return
+        }
+        if pendingBannerText != candidate {
+            pendingBannerText = candidate; pendingBannerSince = nowT; return
+        }
+        if nowT - pendingBannerSince >= 0.6 {
+            bannerText = candidate; bannerColorName = colorName; pendingBannerText = nil
+        }
+    }
     private var stanceRedone: Set<Int> = []
     private var hiResBusy = false
     private var hiResSampleCount = 0
@@ -785,9 +815,61 @@ public struct ARDistortionCalibrationView: View {
     public var body: some View {
         switch step {
         case 0: qrStep
-        case 1: arStep
+        case 1: howToStep
+        case 2: arStep
         default: doneStep
         }
+    }
+
+    // Step 2 — how the guided flow works, BEFORE the camera opens. Customers
+    // get one calm read-through instead of learning mid-flow.
+    private var howToStep: some View {
+        VStack(spacing: 20) {
+            HStack {
+                Button("Back") { step = 0 }
+                Spacer()
+                Button("Cancel") { dismiss() }
+            }
+            Text("Camera Calibration").font(.title2).bold()
+            Text("Step 2 of 3 — how it works")
+                .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 18) {
+                Label {
+                    Text("Stand at the distance shown. A gauge guides you to 4 ft, 7 ft, then 10 ft.")
+                } icon: {
+                    Image(systemName: "figure.walk").frame(width: 28)
+                }
+                Label {
+                    Text("A ring appears on screen. Move the phone until the code sits inside the ring, then hold steady while the ring fills.")
+                } icon: {
+                    Image(systemName: "circle.dashed").frame(width: 28)
+                }
+                Label {
+                    Text("Repeat for each ring position at each distance. It takes about 2 minutes.")
+                } icon: {
+                    Image(systemName: "checklist").frame(width: 28)
+                }
+                Label {
+                    Text("Move slowly and keep the whole code in view. The app checks quality as you go and tells you if anything needs a redo.")
+                } icon: {
+                    Image(systemName: "checkmark.seal").frame(width: 28)
+                }
+            }
+            .font(.callout)
+            .padding(.horizontal)
+            Spacer()
+            Button {
+                step = 2
+            } label: {
+                Text("Start calibration")
+                    .frame(maxWidth: .infinity)
+                    .padding()
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    .cornerRadius(12)
+            }
+        }
+        .padding()
     }
 
     // Step 1 — get the code
@@ -798,7 +880,7 @@ public struct ARDistortionCalibrationView: View {
                 Spacer()
             }
             Text("Camera Calibration").font(.title2).bold()
-            Text("Step 1 of 2 — print the calibration code")
+            Text("Step 1 of 3 — print the calibration code")
                 .foregroundColor(.secondary)
             if let cg = ARDistortionCalibrationEngine.makeQRCGImage() {
                 Image(decorative: cg, scale: 1)
@@ -825,7 +907,7 @@ public struct ARDistortionCalibrationView: View {
             Button {
                 step = 1
             } label: {
-                Text("The code is on the wall — start")
+                Text("The code is on the wall — continue")
                     .frame(maxWidth: .infinity)
                     .padding()
                     .background(Color.accentColor)
@@ -991,14 +1073,15 @@ public struct ARDistortionCalibrationView: View {
         .onChange(of: engine.finished != nil) { done in
             if done {
                 engine.stop()
-                step = 2
+                step = 3
             }
         }
     }
 
-    /// The single instruction — one message, one place.
+    /// The single instruction — one message, one place, debounced in the
+    /// engine so panning can't flicker it, fixed-height so it never reflows.
     private var instructionBanner: some View {
-        let (text, color): (String, Color) = {
+        let (candidate, color): (String, Color) = {
             if let fail = engine.failureBanner { return (fail, .red) }
             switch engine.phase {
             case .acquiring:
@@ -1028,15 +1111,26 @@ public struct ARDistortionCalibrationView: View {
                 return ("Done", .green)
             }
         }()
-        return Text(text)
+        let colorName = color == .red ? "red" : (color == .orange ? "orange" : (color == .green ? "green" : "cyan"))
+        engine.refreshBanner(candidate: candidate, colorName: colorName)
+        let shownColor: Color = {
+            switch engine.bannerColorName {
+            case "red": return .red
+            case "orange": return .orange
+            case "green": return .green
+            default: return .cyan
+            }
+        }()
+        return Text(engine.bannerText.isEmpty ? candidate : engine.bannerText)
             .font(.system(size: 17, weight: .bold, design: .rounded))
             .multilineTextAlignment(.center)
             .foregroundColor(.white)
+            .lineLimit(2)
             .padding(.horizontal, 18)
             .padding(.vertical, 12)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, minHeight: 68)
             .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.8)))
-            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(color.opacity(0.8), lineWidth: 2))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(shownColor.opacity(0.8), lineWidth: 2))
             .padding(.horizontal)
     }
 
