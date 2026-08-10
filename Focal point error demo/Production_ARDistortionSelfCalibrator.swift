@@ -234,6 +234,8 @@ final class ARDistortionSelfCalibrator {
 
     static let lensRef = 0.70
 
+    static let refFx = 1338.0
+
     private func residual(_ s: Sample, _ th: [Double]) -> SIMD2<Double>? {
         let X = anchor0 + SIMD3<Double>(th[0], th[1], th[2])
         let Xc = s.worldToCam * (X - s.camPos)
@@ -242,7 +244,11 @@ final class ARDistortionSelfCalibrator {
         let cx = s.cx + th[6], cy = s.cy + th[7]
         let dx = s.fx * (1 + th[5]) * Xc.x / z
         let dy = s.fy * (1 + th[5]) * (-Xc.y) / z
+        // th[3]/th[4] define k1 in pixel units AT refFx; scale by (refFx/fx)^2
+        // so samples from the video stream and hi-res photo captures fit one
+        // physical curve (k1_px scales as 1/fx^2 for the same lens).
         let k1 = (th[3] + th[4] * (Double(s.lens) - Self.lensRef)) * 1e-8
+            * (Self.refFx * Self.refFx) / (s.fx * s.fx)
         let g = k1 * (dx * dx + dy * dy)
         return SIMD2<Double>(s.obs.x - (cx + dx * (1 + g)),
                              s.obs.y - (cy + dy * (1 + g)))
@@ -384,10 +390,9 @@ final class ARDistortionSelfCalibrator {
             status = .failed("Results unstable — continue the walking pattern")
         } else {
             // Emit k1n (k1 · fx²) so the calibration is resolution independent.
-            let fxMed = kept.map { $0.fx }.sorted()[kept.count / 2]
             func point(_ lens: Double) -> ARDistortionUserCalibration.Point {
                 ARDistortionUserCalibration.Point(lens: Float(lens),
-                                                  k1n: k1At(th, lens) * fxMed * fxMed)
+                                                  k1n: k1At(th, lens) * Self.refFx * Self.refFx)
             }
             let pts = (lensHi - lensLo > 0.03) ? [point(lensLo), point(lensHi)] : [point(lensMid)]
             let cal = ARDistortionUserCalibration(points: pts, rmsPx: rms,
