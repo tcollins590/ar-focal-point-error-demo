@@ -77,7 +77,7 @@ final class AnchorRefiner {
     private struct S {
         let obs: SIMD2<Double>
         let cam: simd_float4x4
-        let fx: Double, cx: Double, cy: Double, k1px: Double
+        let fx: Double, cx: Double, cy: Double, k1px: Double, scale: Double
     }
     private var samples: [S] = []
     private var base: simd_float3?
@@ -87,13 +87,13 @@ final class AnchorRefiner {
     var count: Int { samples.count }
 
     func add(obs: CGPoint, cam: simd_float4x4, fx: Double, cx: Double, cy: Double,
-             k1px: Double, target: simd_float3) {
+             k1px: Double, scale: Double, target: simd_float3) {
         if let b = base, simd_length(b - target) > 0.05 {
             samples.removeAll(); refined = nil
         }
         base = target
         samples.append(S(obs: SIMD2(Double(obs.x), Double(obs.y)), cam: cam,
-                         fx: fx, cx: cx, cy: cy, k1px: k1px))
+                         fx: fx, cx: cx, cy: cy, k1px: k1px, scale: scale))
         if samples.count > 800 { samples.removeFirst(200) }
         if samples.count >= 40, samples.count % 20 == 0 { solve() }
     }
@@ -105,7 +105,7 @@ final class AnchorRefiner {
         let u = s.cx + s.fx * Double(pc.x / -pc.z)
         let v = s.cy - s.fx * Double(pc.y / -pc.z)
         let dx = u - s.cx, dy = v - s.cy
-        let g = s.k1px * (dx * dx + dy * dy)
+        let g = s.scale + s.k1px * (dx * dx + dy * dy)
         return SIMD2(u + dx * g, v + dy * g)
     }
 
@@ -752,7 +752,7 @@ final class DiagnosticsEngine: ObservableObject {
             anchorRefiner.add(obs: obs, cam: snapshot.camTransform,
                               fx: snapshot.fx,
                               cx: Double(snapshot.principal.x), cy: Double(snapshot.principal.y),
-                              k1px: corrector.k1, target: tw)
+                              k1px: corrector.k1, scale: corrector.appliedScale, target: tw)
             // Live coaching toward a solvable anchor; never stomp on photo
             // results or calibration status.
             if !hud.calibrating, !hud.calStatus.hasPrefix("PHOTO"), !hud.calStatus.hasPrefix("capturing") {
@@ -905,6 +905,7 @@ final class DiagnosticsEngine: ObservableObject {
             return
         }
         let fx = lastLiveFx > 100 ? lastLiveFx : 1338
+        corrector.appliedScale = user.scale
         for pt in user.points {
             corrector.apply(RadialCalibration(
                 k1: pt.k1n / (fx * fx), scaleDiag: 0,
@@ -915,8 +916,8 @@ final class DiagnosticsEngine: ObservableObject {
         }
         let pts = user.points.map { String(format: "%.2f→%.2e", $0.lens, $0.k1n / (fx * fx)) }
             .joined(separator: "  ")
-        hud.calStatus = String(format: "GUIDED CAL ADOPTED  rms %.1f px  n=%d  %@",
-                               user.rmsPx, user.sampleCount, pts)
+        hud.calStatus = String(format: "GUIDED CAL ADOPTED  rms %.1f px  n=%d  scale %+.2f%%  %@",
+                               user.rmsPx, user.sampleCount, user.scale * 100, pts)
         markEvent("guided_cal_adopted")
     }
 
@@ -1029,6 +1030,7 @@ final class DiagnosticsEngine: ObservableObject {
         hud.calStatus = "capturing high-res frame…"
         let fxLive = lastLiveFx
         let k1Live = corrector.k1
+        let scaleLive = corrector.appliedScale
         let refined = anchorRefiner.refined
         let refN = anchorRefiner.count
         let refGate = anchorRefiner.gateStatus
@@ -1043,6 +1045,7 @@ final class DiagnosticsEngine: ObservableObject {
             }
             self.visionQueue.async {
                 self.processPhoto(frame: frame, target: tw, fxLive: fxLive, k1Live: k1Live,
+                                  scaleLive: scaleLive,
                                   refined: refined, refN: refN, refGate: refGate)
             }
         }
@@ -1056,6 +1059,7 @@ final class DiagnosticsEngine: ObservableObject {
     }
 
     private func processPhoto(frame: ARFrame, target: simd_float3, fxLive: Double, k1Live: Double,
+                              scaleLive: Double,
                               refined: simd_float3?, refN: Int, refGate: String) {
         let camera = frame.camera
         let res = camera.imageResolution
@@ -1069,7 +1073,7 @@ final class DiagnosticsEngine: ObservableObject {
         let m = fxHi > 0 && fxLive > 0 ? fxLive / fxHi : 1
         let k1Hi = k1Live * m * m
         let dx = Double(raw.x - principal.x), dy = Double(raw.y - principal.y)
-        let g = k1Hi * (dx * dx + dy * dy)
+        let g = scaleLive + k1Hi * (dx * dx + dy * dy)
         let corrected = CGPoint(x: Double(raw.x) + dx * g, y: Double(raw.y) + dy * g)
         let radius = (dx * dx + dy * dy).squareRoot()
 
@@ -1095,7 +1099,7 @@ final class DiagnosticsEngine: ObservableObject {
             anchorShiftCm = Double(simd_length(ra - target)) * 100
             let rawR = camera.projectPoint(ra, orientation: .landscapeRight, viewportSize: res)
             let dxr = Double(rawR.x - principal.x), dyr = Double(rawR.y - principal.y)
-            let gr = k1Hi * (dxr * dxr + dyr * dyr)
+            let gr = scaleLive + k1Hi * (dxr * dxr + dyr * dyr)
             let cR = CGPoint(x: Double(rawR.x) + dxr * gr, y: Double(rawR.y) + dyr * gr)
             refCorrected = cR
             refCorrErr = obs.map { hypot($0.x - cR.x, $0.y - cR.y) }
@@ -1119,8 +1123,8 @@ final class DiagnosticsEngine: ObservableObject {
                 ring(corrected, .magenta, 24)
                 if let refCorrected { ring(refCorrected, .cyan, 16) }
                 if let obs { ring(obs, .orange, 46) }
-                var stats = String(format: "res %.0fx%.0f  fxHi %.0f (video fx %.0f)  k1hi %.2e  r %.0f px\nraw err %@  corrected err %@",
-                                   res.width, res.height, fxHi, fxLive, k1Hi, radius,
+                var stats = String(format: "res %.0fx%.0f  fxHi %.0f (video fx %.0f)  k1hi %.2e  scale %+.2f%%  r %.0f px\nraw err %@  corrected err %@",
+                                   res.width, res.height, fxHi, fxLive, k1Hi, scaleLive * 100, radius,
                                    rawErr.map { String(format: "%.1f px", $0) } ?? "QR not found",
                                    corrErr.map { String(format: "%.1f px", $0) } ?? "-")
                 if let refCorrErr {

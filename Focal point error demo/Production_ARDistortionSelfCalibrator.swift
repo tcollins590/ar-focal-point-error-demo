@@ -29,6 +29,33 @@ public struct ARDistortionUserCalibration: Codable {
     public let sampleCount: Int
     public let deviceModel: String
     public let date: Date
+    /// Fitted radial-linear term (ARKit fx underestimate, ~+0.6% measured).
+    /// Must be APPLIED with k1, not just health-checked: at photo radius
+    /// r=1600 a discarded 0.66% is ~11 px of uniform under-correction.
+    public let scale: Double
+
+    public init(points: [Point], rmsPx: Double, sampleCount: Int,
+                deviceModel: String, date: Date, scale: Double) {
+        self.points = points
+        self.rmsPx = rmsPx
+        self.sampleCount = sampleCount
+        self.deviceModel = deviceModel
+        self.date = date
+        self.scale = scale
+    }
+
+    enum CodingKeys: String, CodingKey { case points, rmsPx, sampleCount, deviceModel, date, scale }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        points = try c.decode([Point].self, forKey: .points)
+        rmsPx = try c.decode(Double.self, forKey: .rmsPx)
+        sampleCount = try c.decode(Int.self, forKey: .sampleCount)
+        deviceModel = try c.decode(String.self, forKey: .deviceModel)
+        date = try c.decode(Date.self, forKey: .date)
+        // Pre-scale calibrations decode with 0 (k1-only, legacy behavior).
+        scale = try c.decodeIfPresent(Double.self, forKey: .scale) ?? 0
+    }
 
     static var storageURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -407,7 +434,8 @@ final class ARDistortionSelfCalibrator {
             let pts = (lensHi - lensLo > 0.03) ? [point(lensLo), point(lensHi)] : [point(lensMid)]
             let cal = ARDistortionUserCalibration(points: pts, rmsPx: rms,
                                                   sampleCount: kept.count,
-                                                  deviceModel: deviceModel, date: Date())
+                                                  deviceModel: deviceModel, date: Date(),
+                                                  scale: th[5])
             status = .solved(cal)
         }
         return status

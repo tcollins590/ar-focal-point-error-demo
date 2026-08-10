@@ -134,6 +134,9 @@ final class DemoProjectionCorrector {
     private(set) var isUserCalibrated = false
     /// Set per frame from the capture device; selects k1 from the curve.
     var currentLens: Float = -1
+    /// Fitted radial-linear term (ARKit fx underestimate) from the adopted
+    /// guided calibration; applied with k1. Resolution independent.
+    var appliedScale: Double = 0
 
     var k1: Double {
         if currentLens >= 0, let k = calibrations.k1(forLens: currentLens) { return k }
@@ -181,7 +184,7 @@ final class DemoProjectionCorrector {
     /// shows that feature. Principal point must be the same frame's.
     func distort(_ p: CGPoint, principal c: CGPoint) -> CGPoint {
         let dx = Double(p.x - c.x), dy = Double(p.y - c.y)
-        let g = k1 * (dx * dx + dy * dy)
+        let g = appliedScale + k1 * (dx * dx + dy * dy)
         return CGPoint(x: Double(p.x) + dx * g, y: Double(p.y) + dy * g)
     }
 
@@ -191,10 +194,10 @@ final class DemoProjectionCorrector {
         let dx = Double(p.x - c.x), dy = Double(p.y - c.y)
         let rd = (dx * dx + dy * dy).squareRoot()
         guard rd > 1e-9 else { return p }
-        var r = rd  // solve r * (1 + k1 r^2) = rd
+        var r = rd  // solve r * (1 + scale + k1 r^2) = rd
         for _ in 0..<4 {
-            let f = r * (1 + k1 * r * r) - rd
-            let df = 1 + 3 * k1 * r * r
+            let f = r * (1 + appliedScale + k1 * r * r) - rd
+            let df = 1 + appliedScale + 3 * k1 * r * r
             r -= f / df
         }
         let s = r / rd

@@ -69,6 +69,13 @@ public final class ARProjectionCorrector {
     private let stateLock = NSLock()
     private var _curve: [CurvePoint] = []
     private var _calibrationSource = "none"
+    private var _userScale: Double = 0
+    /// Fitted radial-linear term, applied together with k1 (see
+    /// ARDistortionUserCalibration.scale).
+    var userScale: Double {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return _userScale
+    }
     private var curve: [CurvePoint] {
         stateLock.lock(); defer { stateLock.unlock() }
         return _curve
@@ -125,6 +132,7 @@ public final class ARProjectionCorrector {
         _curve = user.points.map { CurvePoint(lens: $0.lens, k1n: $0.k1n) }
             .sorted { $0.lens < $1.lens }
         _calibrationSource = "user"
+        _userScale = user.scale
         stateLock.unlock()
         userCalibration = user
     }
@@ -135,6 +143,7 @@ public final class ARProjectionCorrector {
         stateLock.lock()
         _curve = []
         _calibrationSource = "none"
+        _userScale = 0
         stateLock.unlock()
         userCalibration = nil
     }
@@ -291,7 +300,7 @@ public final class ARProjectionCorrector {
         // point back inside. No correction beyond ~1.25× the half-diagonal.
         let maxR = 0.78 * Double(res.width)
         guard r2 < maxR * maxR else { return nil }
-        let g = (k1n(forLens: lens) / (fx * fx)) * r2
+        let g = userScale + (k1n(forLens: lens) / (fx * fx)) * r2
         return CGVector(dx: dx * g, dy: dy * g)
     }
 
@@ -346,11 +355,12 @@ public final class ARProjectionCorrector {
         let rd = (dx * dx + dy * dy).squareRoot()
         guard rd > 1e-9 else { return observed }
         let k1 = k1n(forLens: lensPosition) / (fx * fx)
-        // Solve r·(1 + k1·r²) = rd for the pinhole radius (Newton).
+        let sc = userScale
+        // Solve r·(1 + sc + k1·r²) = rd for the pinhole radius (Newton).
         var r = rd
         for _ in 0..<4 {
-            let f = r * (1 + k1 * r * r) - rd
-            let df = 1 + 3 * k1 * r * r
+            let f = r * (1 + sc + k1 * r * r) - rd
+            let df = 1 + sc + 3 * k1 * r * r
             r -= f / df
         }
         let s = r / rd
