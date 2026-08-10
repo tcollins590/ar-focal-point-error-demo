@@ -132,12 +132,12 @@ final class AnchorRefiner {
             maxRad = max(maxRad, (dx * dx + dy * dy).squareRoot())
         }
         if baseline < 0.15 {
-            gateStatus = String(format: "sweep needs side-to-side movement (baseline %.0f cm < 15)", baseline * 100)
+            gateStatus = String(format: "STEP left & right - sideways movement %.0f/15 cm", baseline * 100)
             refined = nil
             return
         }
         if maxRad < 450 {
-            gateStatus = String(format: "sweep needs QR near screen edges (max radius %.0f px < 450)", maxRad)
+            gateStatus = String(format: "PAN the QR out to the screen corners (%.0f/450 px)", maxRad)
             refined = nil
             return
         }
@@ -753,6 +753,15 @@ final class DiagnosticsEngine: ObservableObject {
                               fx: snapshot.fx,
                               cx: Double(snapshot.principal.x), cy: Double(snapshot.principal.y),
                               k1px: corrector.k1, target: tw)
+            // Live coaching toward a solvable anchor; never stomp on photo
+            // results or calibration status.
+            if !hud.calibrating, !hud.calStatus.hasPrefix("PHOTO"), !hud.calStatus.hasPrefix("capturing") {
+                if anchorRefiner.refined == nil {
+                    hud.calStatus = "sweep: " + anchorRefiner.gateStatus
+                } else {
+                    hud.calStatus = "ground truth locked - take photos (corners especially)"
+                }
+            }
         }
 
         let err = SIMD2<Double>(obs.x - pred.x, obs.y - pred.y)
