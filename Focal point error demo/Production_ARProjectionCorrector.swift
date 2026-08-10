@@ -52,18 +52,6 @@ public final class ARProjectionCorrector {
     }
 
     /// Factory curves per device model (station self-calibration, in-house).
-    /// TODO(calibration): replace/augment with the on-device self-calibration
-    /// flow; a user calibration should take precedence over these.
-    private static let factoryCurves: [String: [CurvePoint]] = [
-        // iPhone 17 Pro Max — calibrated 2026-08-08 (fx_ref 1338 @1920×1440)
-        "iPhone18,2": [
-            CurvePoint(lens: 0.698, k1n: 0.03034),
-            CurvePoint(lens: 0.773, k1n: 0.04977),
-        ],
-    ]
-    /// Generic fallback for unmeasured models (mid-curve of measured devices).
-    private static let genericCurve = [CurvePoint(lens: 0.75, k1n: 0.0394)]
-
     // Curve + source are read from projection loops (any thread) and written
     // when calibration completes — guard with a lock.
     private let stateLock = NSLock()
@@ -80,7 +68,8 @@ public final class ARProjectionCorrector {
         stateLock.lock(); defer { stateLock.unlock() }
         return _curve
     }
-    /// "user" | "factory:<model>" | "generic" — surface in debug UI / telemetry.
+    /// "user" | "none" — by requirement, an uncalibrated device gets the
+    /// identity correction (no baked defaults).
     public var calibrationSource: String {
         stateLock.lock(); defer { stateLock.unlock() }
         return _calibrationSource
@@ -218,7 +207,7 @@ public final class ARProjectionCorrector {
                                       viewportSize: CGSize,
                                       lensPosition: Float? = nil) -> CGPoint {
         let base = camera.projectPoint(point, orientation: orientation, viewportSize: viewportSize)
-        guard isEnabled, k1n(forLens: lensPosition) != 0,
+        guard isEnabled, k1n(forLens: lensPosition) != 0 || userScale != 0,
               let dRaw = rawDelta(point, camera: camera, lens: lensPosition) else {
             return base
         }
@@ -344,7 +333,7 @@ public final class ARProjectionCorrector {
                                  orientation: UIInterfaceOrientation,
                                  viewportSize: CGSize,
                                  lensPosition: Float? = nil) -> CGPoint {
-        guard isEnabled, k1n(forLens: lensPosition) != 0 else { return observed }
+        guard isEnabled, k1n(forLens: lensPosition) != 0 || userScale != 0 else { return observed }
         let res = camera.imageResolution
         let K = camera.intrinsics
         let fx = Double(K[0][0])

@@ -428,8 +428,13 @@ final class ARDistortionSelfCalibrator {
         } else {
             // Emit k1n (k1 · fx²) so the calibration is resolution independent.
             func point(_ lens: Double) -> ARDistortionUserCalibration.Point {
-                ARDistortionUserCalibration.Point(lens: Float(lens),
-                                                  k1n: k1At(th, lens) * Self.refFx * Self.refFx)
+                // The solver measures k1 on the (1+scale)-scaled pinhole
+                // vector; the corrector applies g = scale + k1·r² on the
+                // unscaled one. (1+s)³ converts between the conventions
+                // (review F4; ~2% of k1 at s=0.006).
+                let conv = pow(1 + th[5], 3)
+                return ARDistortionUserCalibration.Point(lens: Float(lens),
+                                                         k1n: k1At(th, lens) * conv * Self.refFx * Self.refFx)
             }
             let pts = (lensHi - lensLo > 0.03) ? [point(lensLo), point(lensHi)] : [point(lensMid)]
             let cal = ARDistortionUserCalibration(points: pts, rmsPx: rms,

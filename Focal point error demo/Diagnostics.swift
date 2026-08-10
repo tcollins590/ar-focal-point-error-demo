@@ -77,7 +77,7 @@ final class AnchorRefiner {
     private struct S {
         let obs: SIMD2<Double>
         let cam: simd_float4x4
-        let fx: Double, cx: Double, cy: Double, k1px: Double, scale: Double
+        let fx: Double, fy: Double, cx: Double, cy: Double, k1px: Double, scale: Double
     }
     private var samples: [S] = []
     private var base: simd_float3?
@@ -86,14 +86,14 @@ final class AnchorRefiner {
     private(set) var gateStatus: String = "no samples"
     var count: Int { samples.count }
 
-    func add(obs: CGPoint, cam: simd_float4x4, fx: Double, cx: Double, cy: Double,
+    func add(obs: CGPoint, cam: simd_float4x4, fx: Double, fy: Double, cx: Double, cy: Double,
              k1px: Double, scale: Double, target: simd_float3) {
         if let b = base, simd_length(b - target) > 0.05 {
             samples.removeAll(); refined = nil
         }
         base = target
         samples.append(S(obs: SIMD2(Double(obs.x), Double(obs.y)), cam: cam,
-                         fx: fx, cx: cx, cy: cy, k1px: k1px, scale: scale))
+                         fx: fx, fy: fy, cx: cx, cy: cy, k1px: k1px, scale: scale))
         if samples.count > 800 { samples.removeFirst(200) }
         if samples.count >= 40, samples.count % 20 == 0 { solve() }
     }
@@ -103,7 +103,7 @@ final class AnchorRefiner {
         let pc = inv * SIMD4<Float>(X.x, X.y, X.z, 1)
         guard pc.z < -0.01 else { return nil }
         let u = s.cx + s.fx * Double(pc.x / -pc.z)
-        let v = s.cy - s.fx * Double(pc.y / -pc.z)
+        let v = s.cy - s.fy * Double(pc.y / -pc.z)
         let dx = u - s.cx, dy = v - s.cy
         let g = s.scale + s.k1px * (dx * dx + dy * dy)
         return SIMD2(u + dx * g, v + dy * g)
@@ -756,7 +756,7 @@ final class DiagnosticsEngine: ObservableObject {
         if ["manual", "auto"].contains(snapshot.targetSource), let tw = snapshot.targetWorld,
            hypot(obs.x - pred.x, obs.y - pred.y) < 120 {
             anchorRefiner.add(obs: obs, cam: snapshot.camTransform,
-                              fx: snapshot.fx,
+                              fx: snapshot.fx, fy: snapshot.fy,
                               cx: Double(snapshot.principal.x), cy: Double(snapshot.principal.y),
                               k1px: corrector.k1, scale: corrector.appliedScale, target: tw)
             // Live coaching toward a solvable anchor; never stomp on photo
