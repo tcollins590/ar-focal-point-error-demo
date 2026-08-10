@@ -420,6 +420,11 @@ final class DiagnosticsEngine: ObservableObject {
         guard !logger.isRecording else { return }
         logger.start()
         hud.recording = true
+        // Auto-adopt the guided calibration (k1 curve + scale) every launch so
+        // a restart always runs the full current correction — no manual step.
+        if ARDistortionUserCalibration.load() != nil {
+            adoptGuidedCalibration()
+        }
     }
 
     func toggleRecording() {
