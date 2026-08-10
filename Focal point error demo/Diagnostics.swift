@@ -82,6 +82,8 @@ final class AnchorRefiner {
     private var samples: [S] = []
     private var base: simd_float3?
     private(set) var refined: simd_float3?
+    /// Why `refined` is nil (or empty when it's valid) — shown on photos.
+    private(set) var gateStatus: String = "no samples"
     var count: Int { samples.count }
 
     func add(obs: CGPoint, cam: simd_float4x4, fx: Double, cx: Double, cy: Double,
@@ -108,6 +110,34 @@ final class AnchorRefiner {
     }
 
     private func solve() {
+        // Observability gates: without lateral camera baseline AND radius
+        // spread, anchor depth is unconstrained along the view ray and
+        // Gauss-Newton chases noise (measured: spurious 40 cm "shift" from a
+        // center-only sweep whose true anchor error was < 1 cm).
+        var mean = SIMD3<Float>.zero
+        for s in samples { mean += SIMD3(s.cam.columns.3.x, s.cam.columns.3.y, s.cam.columns.3.z) }
+        mean /= Float(samples.count)
+        var varSum = SIMD3<Float>.zero
+        for s in samples {
+            let d = SIMD3<Float>(s.cam.columns.3.x, s.cam.columns.3.y, s.cam.columns.3.z) - mean
+            varSum += d * d
+        }
+        let std = SIMD3<Float>(varSum.x.squareRoot(), varSum.y.squareRoot(), varSum.z.squareRoot())
+            / Float(samples.count).squareRoot()
+        let baseline = max(std.x, max(std.y, std.z))
+        let maxRad = samples.map { s in
+            ((s.obs.x - s.cx) * (s.obs.x - s.cx) + (s.obs.y - s.cy) * (s.obs.y - s.cy)).squareRoot()
+        }.max() ?? 0
+        if baseline < 0.15 {
+            gateStatus = String(format: "sweep needs side-to-side movement (baseline %.0f cm < 15)", baseline * 100)
+            refined = nil
+            return
+        }
+        if maxRad < 450 {
+            gateStatus = String(format: "sweep needs QR near screen edges (max radius %.0f px < 450)", maxRad)
+            refined = nil
+            return
+        }
         guard var X = refined ?? base else { return }
         let eps: Float = 1e-3
         for _ in 0..<8 {
@@ -144,7 +174,16 @@ final class AnchorRefiner {
             X += step
             if simd_length(step) < 1e-5 { break }
         }
-        if let b = base, simd_length(X - b) < 0.5 { refined = X }
+        // A raycast that hit a real surface at 5+ ft is not 15+ cm wrong; a
+        // solution that far away means the solve is chasing drift or noise.
+        if let b = base, simd_length(X - b) < 0.15 {
+            refined = X
+            gateStatus = ""
+        } else if let b = base {
+            gateStatus = String(format: "refit rejected: %.0f cm from raycast (limit 15)",
+                                simd_length(X - b) * 100)
+            refined = nil
+        }
     }
 }
 
@@ -980,6 +1019,7 @@ final class DiagnosticsEngine: ObservableObject {
         let k1Live = corrector.k1
         let refined = anchorRefiner.refined
         let refN = anchorRefiner.count
+        let refGate = anchorRefiner.gateStatus
         arView.session.captureHighResolutionFrame { [weak self] frame, error in
             guard let self else { return }
             guard let frame else {
@@ -991,7 +1031,7 @@ final class DiagnosticsEngine: ObservableObject {
             }
             self.visionQueue.async {
                 self.processPhoto(frame: frame, target: tw, fxLive: fxLive, k1Live: k1Live,
-                                  refined: refined, refN: refN)
+                                  refined: refined, refN: refN, refGate: refGate)
             }
         }
     }
@@ -1004,7 +1044,7 @@ final class DiagnosticsEngine: ObservableObject {
     }
 
     private func processPhoto(frame: ARFrame, target: simd_float3, fxLive: Double, k1Live: Double,
-                              refined: simd_float3?, refN: Int) {
+                              refined: simd_float3?, refN: Int, refGate: String) {
         let camera = frame.camera
         let res = camera.imageResolution
         let K = camera.intrinsics
@@ -1075,7 +1115,7 @@ final class DiagnosticsEngine: ObservableObject {
                     stats += String(format: "\nrefined anchor (n=%d, shift %.1f cm): corrected err %.1f px",
                                     refN, anchorShiftCm, refCorrErr)
                 } else {
-                    stats += "\nno refined anchor yet — sweep the QR live before photos"
+                    stats += "\nno refined anchor: \(refGate)"
                 }
                 (stats as NSString).draw(at: CGPoint(x: 40, y: 40), withAttributes: [
                     .font: UIFont.boldSystemFont(ofSize: 44),
