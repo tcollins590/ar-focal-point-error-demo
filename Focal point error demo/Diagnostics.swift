@@ -65,6 +65,89 @@ struct DiagnosticsHUD {
     var calStatus: String = ""
 }
 
+// MARK: - Anchor refinement
+
+/// Raycast anchor placement carries cm-scale depth error (estimatedPlane at
+/// 2 m was measured 15 cm off along the view ray) which shows up as a
+/// constant px offset from offset viewpoints — dwarfing the lens residual the
+/// rig is trying to judge. This solves the anchor's true 3D position from the
+/// live QR detections (k1 fixed from the adopted calibration), so photo stats
+/// can be reported against ground truth instead of the raycast guess.
+final class AnchorRefiner {
+    private struct S {
+        let obs: SIMD2<Double>
+        let cam: simd_float4x4
+        let fx: Double, cx: Double, cy: Double, k1px: Double
+    }
+    private var samples: [S] = []
+    private var base: simd_float3?
+    private(set) var refined: simd_float3?
+    var count: Int { samples.count }
+
+    func add(obs: CGPoint, cam: simd_float4x4, fx: Double, cx: Double, cy: Double,
+             k1px: Double, target: simd_float3) {
+        if let b = base, simd_length(b - target) > 0.05 {
+            samples.removeAll(); refined = nil
+        }
+        base = target
+        samples.append(S(obs: SIMD2(Double(obs.x), Double(obs.y)), cam: cam,
+                         fx: fx, cx: cx, cy: cy, k1px: k1px))
+        if samples.count > 800 { samples.removeFirst(200) }
+        if samples.count >= 40, samples.count % 20 == 0 { solve() }
+    }
+
+    private func project(_ X: simd_float3, _ s: S) -> SIMD2<Double>? {
+        let inv = s.cam.inverse
+        let pc = inv * SIMD4<Float>(X.x, X.y, X.z, 1)
+        guard pc.z < -0.01 else { return nil }
+        let u = s.cx + s.fx * Double(pc.x / -pc.z)
+        let v = s.cy - s.fx * Double(pc.y / -pc.z)
+        let dx = u - s.cx, dy = v - s.cy
+        let g = s.k1px * (dx * dx + dy * dy)
+        return SIMD2(u + dx * g, v + dy * g)
+    }
+
+    private func solve() {
+        guard var X = refined ?? base else { return }
+        let eps: Float = 1e-3
+        for _ in 0..<8 {
+            var res: [(SIMD2<Double>, S)] = []
+            for s in samples { if let p = project(X, s) { res.append((p - s.obs, s)) } }
+            guard res.count > 20 else { return }
+            let med = res.map { simd_length($0.0) }.sorted()[res.count / 2]
+            var A = [[Double]](repeating: [Double](repeating: 0, count: 3), count: 3)
+            var b = [Double](repeating: 0, count: 3)
+            for (r, s) in res {
+                let n = simd_length(r)
+                let w = 1.0 / (1 + pow(n / max(3 * med, 1e-6), 2))
+                var J = [[Double]](repeating: [0, 0], count: 3)
+                for a in 0..<3 {
+                    var Xp = X
+                    Xp[a] += eps
+                    guard let pp = project(Xp, s), let p0 = project(X, s) else { continue }
+                    J[a] = [(pp.x - p0.x) / Double(eps), (pp.y - p0.y) / Double(eps)]
+                }
+                for i in 0..<3 {
+                    for j in 0..<3 { A[i][j] += w * (J[i][0] * J[j][0] + J[i][1] * J[j][1]) }
+                    b[i] -= w * (J[i][0] * r.x + J[i][1] * r.y)
+                }
+            }
+            // Solve 3x3 via Cramer
+            let d = A[0][0]*(A[1][1]*A[2][2]-A[1][2]*A[2][1]) - A[0][1]*(A[1][0]*A[2][2]-A[1][2]*A[2][0]) + A[0][2]*(A[1][0]*A[2][1]-A[1][1]*A[2][0])
+            guard abs(d) > 1e-12 else { return }
+            func rep(_ c: Int) -> Double {
+                var M = A
+                for i in 0..<3 { M[i][c] = b[i] }
+                return M[0][0]*(M[1][1]*M[2][2]-M[1][2]*M[2][1]) - M[0][1]*(M[1][0]*M[2][2]-M[1][2]*M[2][0]) + M[0][2]*(M[1][0]*M[2][1]-M[1][1]*M[2][0])
+            }
+            let step = SIMD3<Float>(Float(rep(0) / d), Float(rep(1) / d), Float(rep(2) / d))
+            X += step
+            if simd_length(step) < 1e-5 { break }
+        }
+        if let b = base, simd_length(X - b) < 0.5 { refined = X }
+    }
+}
+
 // MARK: - Online scale/offset fit
 
 /// Fits observed = s * predicted + offset per image axis, over recent samples.
@@ -203,6 +286,7 @@ final class DiagnosticsEngine: ObservableObject {
     weak var arView: ARView?
 
     private let fitter = ProjectionFitter()
+    let anchorRefiner = AnchorRefiner()
     private let visionQueue = DispatchQueue(label: "diag.vision")
     private var visionBusy = false
     private var lastVisionTime: TimeInterval = 0
@@ -621,6 +705,14 @@ final class DiagnosticsEngine: ObservableObject {
 
         guard let pred = snapshot.predicted else { return }
 
+        if ["manual", "auto"].contains(snapshot.targetSource), let tw = snapshot.targetWorld,
+           hypot(obs.x - pred.x, obs.y - pred.y) < 120 {
+            anchorRefiner.add(obs: obs, cam: snapshot.camTransform,
+                              fx: snapshot.fx,
+                              cx: Double(snapshot.principal.x), cy: Double(snapshot.principal.y),
+                              k1px: corrector.k1, target: tw)
+        }
+
         let err = SIMD2<Double>(obs.x - pred.x, obs.y - pred.y)
         let radial = SIMD2<Double>(Double(pred.x - snapshot.principal.x),
                                    Double(pred.y - snapshot.principal.y))
@@ -886,6 +978,8 @@ final class DiagnosticsEngine: ObservableObject {
         hud.calStatus = "capturing high-res frame…"
         let fxLive = lastLiveFx
         let k1Live = corrector.k1
+        let refined = anchorRefiner.refined
+        let refN = anchorRefiner.count
         arView.session.captureHighResolutionFrame { [weak self] frame, error in
             guard let self else { return }
             guard let frame else {
@@ -896,7 +990,8 @@ final class DiagnosticsEngine: ObservableObject {
                 return
             }
             self.visionQueue.async {
-                self.processPhoto(frame: frame, target: tw, fxLive: fxLive, k1Live: k1Live)
+                self.processPhoto(frame: frame, target: tw, fxLive: fxLive, k1Live: k1Live,
+                                  refined: refined, refN: refN)
             }
         }
     }
@@ -908,7 +1003,8 @@ final class DiagnosticsEngine: ObservableObject {
         return dir
     }
 
-    private func processPhoto(frame: ARFrame, target: simd_float3, fxLive: Double, k1Live: Double) {
+    private func processPhoto(frame: ARFrame, target: simd_float3, fxLive: Double, k1Live: Double,
+                              refined: simd_float3?, refN: Int) {
         let camera = frame.camera
         let res = camera.imageResolution
         let K = camera.intrinsics
@@ -938,6 +1034,21 @@ final class DiagnosticsEngine: ObservableObject {
         let rawErr = obs.map { hypot($0.x - raw.x, $0.y - raw.y) }
         let corrErr = obs.map { hypot($0.x - corrected.x, $0.y - corrected.y) }
 
+        // Same stats against the sweep-refined anchor: isolates the lens
+        // residual from raycast anchor error (the dominant verification bias).
+        var refCorrected: CGPoint?
+        var refCorrErr: CGFloat?
+        var anchorShiftCm: Double = 0
+        if let ra = refined {
+            anchorShiftCm = Double(simd_length(ra - target)) * 100
+            let rawR = camera.projectPoint(ra, orientation: .landscapeRight, viewportSize: res)
+            let dxr = Double(rawR.x - principal.x), dyr = Double(rawR.y - principal.y)
+            let gr = k1Hi * (dxr * dxr + dyr * dyr)
+            let cR = CGPoint(x: Double(rawR.x) + dxr * gr, y: Double(rawR.y) + dyr * gr)
+            refCorrected = cR
+            refCorrErr = obs.map { hypot($0.x - cR.x, $0.y - cR.y) }
+        }
+
         // Annotated JPEG (raw landscape orientation).
         let ci = CIImage(cvPixelBuffer: frame.capturedImage)
         var fileName = ""
@@ -954,11 +1065,18 @@ final class DiagnosticsEngine: ObservableObject {
                 }
                 ring(raw, .green, 34)
                 ring(corrected, .magenta, 24)
+                if let refCorrected { ring(refCorrected, .cyan, 16) }
                 if let obs { ring(obs, .orange, 46) }
-                let stats = String(format: "res %.0fx%.0f  fxHi %.0f (video fx %.0f)  k1hi %.2e  r %.0f px\nraw err %@  corrected err %@",
+                var stats = String(format: "res %.0fx%.0f  fxHi %.0f (video fx %.0f)  k1hi %.2e  r %.0f px\nraw err %@  corrected err %@",
                                    res.width, res.height, fxHi, fxLive, k1Hi, radius,
                                    rawErr.map { String(format: "%.1f px", $0) } ?? "QR not found",
                                    corrErr.map { String(format: "%.1f px", $0) } ?? "-")
+                if let refCorrErr {
+                    stats += String(format: "\nrefined anchor (n=%d, shift %.1f cm): corrected err %.1f px",
+                                    refN, anchorShiftCm, refCorrErr)
+                } else {
+                    stats += "\nno refined anchor yet — sweep the QR live before photos"
+                }
                 (stats as NSString).draw(at: CGPoint(x: 40, y: 40), withAttributes: [
                     .font: UIFont.boldSystemFont(ofSize: 44),
                     .foregroundColor: UIColor.yellow,
@@ -980,8 +1098,9 @@ final class DiagnosticsEngine: ObservableObject {
             } else {
                 self.hud.calStatus = String(format: "PHOTO %@ (%.0fx%.0f): QR not found in photo", fileName, res.width, res.height)
             }
-            self.markEvent(String(format: "photo %@ raw=%.1f corr=%.1f r=%.0f fxHi=%.0f resW=%.0f",
-                                  fileName, rawErr ?? -1, corrErr ?? -1, radius, fxHi, res.width))
+            self.markEvent(String(format: "photo %@ raw=%.1f corr=%.1f refCorr=%.1f shiftCm=%.1f refN=%d r=%.0f fxHi=%.0f resW=%.0f",
+                                  fileName, rawErr ?? -1, corrErr ?? -1, refCorrErr ?? -1,
+                                  anchorShiftCm, refN, radius, fxHi, res.width))
         }
     }
 
