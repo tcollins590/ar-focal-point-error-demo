@@ -133,6 +133,8 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
         [Int](repeating: 0, count: ARDistortionCalibrationEngine.positions(forStance: $0).count)
     }
     private var bannerGeneration = 0
+    private var stanceLensAccum: [Double] = []
+    private var stanceRedone: Set<Int> = []
     private var hiResBusy = false
     private var hiResSampleCount = 0
     private var flowLogHandle: FileHandle?
@@ -249,6 +251,7 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
 
     // ---- transitions (all on main) ----
     private func enterMoveToStance(_ s: Int) {
+        stanceLensAccum.removeAll()
         stanceIndex = s
         inStanceFrames = 0
         phase = .moveToStance
@@ -266,10 +269,36 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
         flog("phase sweeping stance=\(Self.stanceFt(stanceIndex))ft pos=\(p) '\(currentSay)' cell=\(cells[stanceIndex][p])/\(cellQuota)")
     }
 
+    private func showTransientBanner(_ msg: String, seconds: Double = 6) {
+        failureBanner = msg
+        bannerGeneration += 1
+        let gen = bannerGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds) { [weak self] in
+            if self?.bannerGeneration == gen { self?.failureBanner = nil }
+        }
+    }
+
     private func advanceAfterCell() {
         if let p = firstIncomplete(stance: stanceIndex) {
             enterSweeping(position: p)
             return
+        }
+        // Per-stance lens checkpoint: the near stance anchors the low end of
+        // the k1(lens) curve. Catch a bad leg the moment the stance ends and
+        // repeat just these circles — never let a customer finish the whole
+        // flow only to be told to redo it (end-of-run gate stays as backstop).
+        if stanceIndex == 0, !stanceRedone.contains(0), stanceLensAccum.count >= 30 {
+            let sorted = stanceLensAccum.sorted()
+            let p10 = sorted[sorted.count / 10]
+            if p10 > 0.745 {
+                stanceRedone.insert(0)
+                for i in cells[0].indices { cells[0][i] = 0 }
+                refreshDerived()
+                flog(String(format: "stance-0 lens checkpoint p10=%.3f > 0.745 — repeating 4 ft leg", p10))
+                showTransientBanner("Almost - the close-up circles need you right ON the 4 ft line. Let's repeat just these.")
+                enterMoveToStance(0)
+                return
+            }
         }
         if let s = nextIncompleteStance() {
             enterMoveToStance(s)
@@ -719,6 +748,7 @@ final class ARDistortionCalibrationEngine: NSObject, ObservableObject, ARSession
             guard settled >= 0.5, !advancePending else { return }
             cells[stanceIndex][positionIndex] += 1
             refreshDerived()
+            stanceLensAccum.append(Double(lens))
             // Photo-pipeline sample fires MID-hold (credit 3 of 10), while the
             // user is still steady on the ring — firing at cell-done caught
             // the swing to the next position and 24/37 got motion-trimmed.
@@ -980,7 +1010,7 @@ public struct ARDistortionCalibrationView: View {
                 let label = ARDistortionCalibrationEngine.stanceLabel(engine.stanceIndex)
                 let dir = engine.distanceM < engine.stanceDistance ? "back" : "forward"
                 if engine.stanceIndex == ARDistortionCalibrationEngine.farFocusStance {
-                    return ("Far-focus pass: walk \(dir) to about 8 ft", .cyan)
+                    return ("Far-focus pass: walk \(dir) to about \(ARDistortionCalibrationEngine.stanceFt(engine.stanceIndex)) ft", .cyan)
                 }
                 return ("Walk \(dir) to the \(label) mark", .cyan)
             case .sweeping:
